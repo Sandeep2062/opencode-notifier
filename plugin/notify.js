@@ -18,27 +18,31 @@ function logDebug(msg) {
 function triggerNotification(type, data = {}) {
   let title = "OpenCode";
   let message = "";
+  let soundType = "idle";
 
-  switch (type) {
-    case "permission.asked":
-      title = "OpenCode - Permission Required";
-      message = data?.title || data?.description || data?.tool || "OpenCode is waiting for your permission.";
-      break;
-    case "session.idle":
-      title = "OpenCode - Finished";
-      message = "OpenCode completed the task and is waiting for your input.";
-      break;
-    case "session.error":
-      title = "OpenCode - Error";
-      message = data?.message || data?.error || "An error occurred in OpenCode.";
-      break;
-    default:
-      title = "OpenCode Notification";
-      message = `Event: ${type}`;
-      break;
+  if (type === "permission.asked") {
+    soundType = "permission";
+    title = "OpenCode - Permission Required";
+    message = data?.title || data?.description || data?.tool || "OpenCode is waiting for your permission.";
+  } else if (type === "session.idle" || type === "session.execution.succeeded") {
+    soundType = "idle";
+    title = "OpenCode - Task Finished";
+    message = "OpenCode completed the task and is waiting for your input.";
+  } else if (
+    type === "session.error" ||
+    type === "session.execution.failed" ||
+    type === "session.step.failed"
+  ) {
+    soundType = "error";
+    title = "OpenCode - Error";
+    message = data?.message || data?.error || "An error occurred in OpenCode.";
+  } else {
+    soundType = "idle";
+    title = "OpenCode Notification";
+    message = `Event: ${type}`;
   }
 
-  logDebug(`Triggering notification: ${type} - ${title}: ${message}`);
+  logDebug(`Triggering notification: ${type} (sound: ${soundType}) - ${title}: ${message}`);
 
   try {
     if (process.platform === "win32") {
@@ -51,7 +55,7 @@ function triggerNotification(type, data = {}) {
           "-File",
           PS_SCRIPT,
           "-Type",
-          type,
+          soundType,
           "-Title",
           title,
           "-Message",
@@ -65,7 +69,7 @@ function triggerNotification(type, data = {}) {
       );
       child.unref();
     } else if (existsSync(SH_SCRIPT)) {
-      const child = spawn(SH_SCRIPT, [type, message, title], {
+      const child = spawn(SH_SCRIPT, [soundType, message, title], {
         detached: true,
         stdio: "ignore"
       });
@@ -90,7 +94,10 @@ function handleEvent(event) {
   if (
     event.type === "permission.asked" ||
     event.type === "session.idle" ||
-    event.type === "session.error"
+    event.type === "session.execution.succeeded" ||
+    event.type === "session.error" ||
+    event.type === "session.execution.failed" ||
+    event.type === "session.step.failed"
   ) {
     triggerNotification(event.type, event.data);
   }
