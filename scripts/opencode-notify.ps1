@@ -2,8 +2,8 @@ param(
     [string]$Type = "permission",
     [string]$Title = "",
     [string]$Message = "",
-    [switch]$Voice,
-    [string]$WavFile = ""
+    [string]$WavFile = "",
+    [switch]$NoVoice = $false
 )
 
 # Normalize event type
@@ -18,6 +18,7 @@ switch ($Type.ToLower()) {
 
 $defaultWav = ""
 $soundEvent = "Notification.Default"
+$voiceText = "OpenCode notification"
 
 switch ($Type.ToLower()) {
     "permission" {
@@ -31,9 +32,9 @@ switch ($Type.ToLower()) {
     "idle" {
         if (-not $Title)   { $Title = "OpenCode - Task Finished" }
         if (-not $Message) { $Message = "OpenCode has completed and is waiting for your input." }
-        $defaultWav = "C:\Windows\Media\chimes.wav"
-        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\tada.wav" }
-        $soundEvent = "Notification.Default"
+        $defaultWav = "C:\Windows\Media\tada.wav"
+        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\chimes.wav" }
+        $soundEvent = "Notification.Reminder"
         $voiceText = "OpenCode task completed"
     }
     "error" {
@@ -47,26 +48,29 @@ switch ($Type.ToLower()) {
     default {
         if (-not $Title)   { $Title = "OpenCode Notification" }
         if (-not $Message) { $Message = "Notification event: $Type" }
-        $defaultWav = "C:\Windows\Media\chimes.wav"
+        $defaultWav = "C:\Windows\Media\tada.wav"
         $soundEvent = "Notification.Default"
         $voiceText = "OpenCode notification"
     }
 }
 
-# 1. Display Windows Toast Notification FIRST (instant visual pop-up)
+# 1. Display Persistent High-Priority Windows Toast (scenario="reminder" prevents being hidden by Focus Assist)
 try {
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
     $xmlTemplate = @"
-<toast>
+<toast scenario="reminder">
     <visual>
         <binding template="ToastGeneric">
             <text>$Title</text>
             <text>$Message</text>
         </binding>
     </visual>
-    <audio silent="true" />
+    <audio src="ms-winsoundevent:$soundEvent" />
+    <actions>
+        <action content="Dismiss" activationType="system" arguments="dismiss" />
+    </actions>
 </toast>
 "@
 
@@ -97,35 +101,20 @@ try {
     } catch {}
 }
 
-# 2. Play Audio in sync with the visual popup
-$audioPlayed = $false
-$targetWav = if ($WavFile -and (Test-Path $WavFile)) { $WavFile } else { $defaultWav }
-
-if ($targetWav -and (Test-Path $targetWav)) {
-    try {
-        $player = New-Object System.Media.SoundPlayer $targetWav
-        $player.PlaySync()
-        $audioPlayed = $true
-    } catch {}
-}
-
-# Fallback to system sounds if wav player failed
-if (-not $audioPlayed) {
-    try {
-        switch ($Type.ToLower()) {
-            "permission" { [System.Media.SystemSounds]::Exclamation.Play() }
-            "error"      { [System.Media.SystemSounds]::Hand.Play() }
-            default      { [System.Media.SystemSounds]::Asterisk.Play() }
-        }
-        Start-Sleep -Milliseconds 600
-    } catch {}
-}
-
-# Optional Voice (TTS) Announcement
-if ($Voice) {
+# 2. Spoken Voice Announcement (Crystal-clear speech so you hear it even away from keyboard)
+if (-not $NoVoice) {
     try {
         Add-Type -AssemblyName System.Speech
         $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
         $synth.SpeakAsync($voiceText) | Out-Null
+    } catch {}
+}
+
+# 3. Play Direct High-Fidelity WAV Chime
+$targetWav = if ($WavFile -and (Test-Path $WavFile)) { $WavFile } else { $defaultWav }
+if ($targetWav -and (Test-Path $targetWav)) {
+    try {
+        $player = New-Object System.Media.SoundPlayer $targetWav
+        $player.PlaySync()
     } catch {}
 }
