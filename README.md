@@ -29,7 +29,7 @@ Clone the repository and run the setup script for your platform:
 ### Windows (PowerShell)
 Open PowerShell (no admin rights required) and run:
 ```powershell
-git clone https://github.com/<your-username>/opencode-notifier.git
+git clone https://github.com/Sandeep2062/opencode-notifier.git
 cd opencode-notifier
 .\install.ps1
 ```
@@ -37,7 +37,7 @@ cd opencode-notifier
 ### macOS & Linux (Bash)
 Open terminal and run:
 ```bash
-git clone https://github.com/<your-username>/opencode-notifier.git
+git clone https://github.com/Sandeep2062/opencode-notifier.git
 cd opencode-notifier
 chmod +x install.sh
 ./install.sh
@@ -198,4 +198,4 @@ Run the uninstaller script:
 ---
 
 ## 📄 License
-MIT © [Sandeep Khadka](https://github.com/sandeepkhadka9090)
+MIT © [Sandeep Khadka](https://github.com/Sandeep2062)

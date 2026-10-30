@@ -4,6 +4,10 @@
   "description": "Cross-platform audio and visual notifications plugin for OpenCode CLI (Windows, macOS, Linux)",
   "main": "plugin/notify.js",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sandeep2062/opencode-notifier.git"
+  },
   "scripts": {
     "test:windows": "powershell -ExecutionPolicy Bypass -File scripts/opencode-notify.ps1 -Type permission",
     "test:unix": "bash scripts/opencode-notify.sh permission"
