@@ -1,7 +1,9 @@
 param(
     [string]$Type = "permission",
     [string]$Title = "",
-    [string]$Message = ""
+    [string]$Message = "",
+    [switch]$Voice,
+    [string]$WavFile = ""
 )
 
 # Normalize event type
@@ -14,36 +16,77 @@ switch ($Type.ToLower()) {
     "session.step.failed"         { $Type = "error" }
 }
 
+$defaultWav = ""
 $soundEvent = "Notification.Default"
 
 switch ($Type.ToLower()) {
     "permission" {
         if (-not $Title)   { $Title = "OpenCode - Permission Required" }
         if (-not $Message) { $Message = "OpenCode is waiting for your permission to proceed." }
+        $defaultWav = "C:\Windows\Media\notify.wav"
+        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\Windows Notify.wav" }
         $soundEvent = "Notification.Reminder"
-        [System.Media.SystemSounds]::Exclamation.Play()
+        $voiceText = "OpenCode needs your permission"
     }
     "idle" {
         if (-not $Title)   { $Title = "OpenCode - Task Finished" }
         if (-not $Message) { $Message = "OpenCode has completed and is waiting for your input." }
+        $defaultWav = "C:\Windows\Media\chimes.wav"
+        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\tada.wav" }
         $soundEvent = "Notification.Default"
-        [System.Media.SystemSounds]::Asterisk.Play()
+        $voiceText = "OpenCode task completed"
     }
     "error" {
         if (-not $Title)   { $Title = "OpenCode - Error" }
         if (-not $Message) { $Message = "An error occurred in OpenCode." }
+        $defaultWav = "C:\Windows\Media\chord.wav"
+        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\Windows Foreground.wav" }
         $soundEvent = "Notification.Critical"
-        [System.Media.SystemSounds]::Hand.Play()
+        $voiceText = "OpenCode encountered an error"
     }
     default {
         if (-not $Title)   { $Title = "OpenCode Notification" }
         if (-not $Message) { $Message = "Notification event: $Type" }
+        $defaultWav = "C:\Windows\Media\chimes.wav"
         $soundEvent = "Notification.Default"
-        [System.Media.SystemSounds]::Asterisk.Play()
+        $voiceText = "OpenCode notification"
     }
 }
 
-# Display Windows Toast Notification
+# 1. Play Audio via SoundPlayer (plays at normal media volume, bypassing muted system sounds)
+$audioPlayed = $false
+$targetWav = if ($WavFile -and (Test-Path $WavFile)) { $WavFile } else { $defaultWav }
+
+if ($targetWav -and (Test-Path $targetWav)) {
+    try {
+        $player = New-Object System.Media.SoundPlayer $targetWav
+        $player.PlaySync()
+        $audioPlayed = $true
+    } catch {}
+}
+
+# Fallback to system sounds if wav player failed
+if (-not $audioPlayed) {
+    try {
+        switch ($Type.ToLower()) {
+            "permission" { [System.Media.SystemSounds]::Exclamation.Play() }
+            "error"      { [System.Media.SystemSounds]::Hand.Play() }
+            default      { [System.Media.SystemSounds]::Asterisk.Play() }
+        }
+        Start-Sleep -Milliseconds 600
+    } catch {}
+}
+
+# Optional Voice (TTS) Announcement
+if ($Voice) {
+    try {
+        Add-Type -AssemblyName System.Speech
+        $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        $synth.SpeakAsync($voiceText) | Out-Null
+    } catch {}
+}
+
+# 2. Display Windows Toast Notification
 try {
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
@@ -76,10 +119,6 @@ try {
             $shown = $true
         } catch {}
     }
-
-    if (-not $shown) {
-        throw "Toast notification display failed"
-    }
 } catch {
     # Fallback to system tray balloon notification
     try {
@@ -90,6 +129,3 @@ try {
         $notify.ShowBalloonTip(4000, $Title, $Message, [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {}
 }
-
-# Ensure audio playback buffer completes before process exit
-Start-Sleep -Milliseconds 600
