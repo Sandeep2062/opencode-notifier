@@ -53,7 +53,51 @@ switch ($Type.ToLower()) {
     }
 }
 
-# 1. Play Audio via SoundPlayer (plays at normal media volume, bypassing muted system sounds)
+# 1. Display Windows Toast Notification FIRST (instant visual pop-up)
+try {
+    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+
+    $xmlTemplate = @"
+<toast>
+    <visual>
+        <binding template="ToastGeneric">
+            <text>$Title</text>
+            <text>$Message</text>
+        </binding>
+    </visual>
+    <audio silent="true" />
+</toast>
+"@
+
+    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $xml.LoadXml($xmlTemplate)
+    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+
+    # Try OpenCode AppId first, fallback to PowerShell AppId
+    $shown = $false
+    try {
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("OpenCode").Show($toast)
+        $shown = $true
+    } catch {
+        try {
+            $psAppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($psAppId).Show($toast)
+            $shown = $true
+        } catch {}
+    }
+} catch {
+    # Fallback to system tray balloon notification
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $notify = New-Object System.Windows.Forms.NotifyIcon
+        $notify.Icon = [System.Drawing.SystemIcons]::Information
+        $notify.Visible = $true
+        $notify.ShowBalloonTip(4000, $Title, $Message, [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch {}
+}
+
+# 2. Play Audio in sync with the visual popup
 $audioPlayed = $false
 $targetWav = if ($WavFile -and (Test-Path $WavFile)) { $WavFile } else { $defaultWav }
 
@@ -83,49 +127,5 @@ if ($Voice) {
         Add-Type -AssemblyName System.Speech
         $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
         $synth.SpeakAsync($voiceText) | Out-Null
-    } catch {}
-}
-
-# 2. Display Windows Toast Notification
-try {
-    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-
-    $xmlTemplate = @"
-<toast>
-    <visual>
-        <binding template="ToastGeneric">
-            <text>$Title</text>
-            <text>$Message</text>
-        </binding>
-    </visual>
-    <audio src="ms-winsoundevent:$soundEvent" />
-</toast>
-"@
-
-    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-    $xml.LoadXml($xmlTemplate)
-    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-
-    # Try OpenCode AppId first, fallback to PowerShell AppId
-    $shown = $false
-    try {
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("OpenCode").Show($toast)
-        $shown = $true
-    } catch {
-        try {
-            $psAppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($psAppId).Show($toast)
-            $shown = $true
-        } catch {}
-    }
-} catch {
-    # Fallback to system tray balloon notification
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        $notify = New-Object System.Windows.Forms.NotifyIcon
-        $notify.Icon = [System.Drawing.SystemIcons]::Information
-        $notify.Visible = $true
-        $notify.ShowBalloonTip(4000, $Title, $Message, [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {}
 }
