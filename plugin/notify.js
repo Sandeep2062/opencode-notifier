@@ -1,151 +1,101 @@
-import { spawn } from "child_process";
-import { homedir } from "os";
-import { join } from "path";
-import { existsSync, appendFileSync } from "fs";
+import { spawn as spawnProcess } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync, appendFileSync, mkdirSync, statSync, renameSync } from 'node:fs';
+import { notificationFor, createDeduplicator } from './notification-core.js';
+import { createDeliveryClaim } from './delivery-claim.js';
 
-const LOG_FILE = join(homedir(), ".config", "opencode", "notify.log");
-const PS_SCRIPT = join(homedir(), ".config", "opencode", "opencode-notify.ps1");
-const SH_SCRIPT = join(homedir(), "opencode-notify.sh");
+const sharedDuplicates = createDeduplicator();
+const moduleDir = dirname(fileURLToPath(import.meta.url));
 
-const recentEvents = new Set();
-
-function logDebug(msg) {
-  try {
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch {}
+function logger(configDir) {
+  return message => {
+    try {
+      mkdirSync(configDir, { recursive: true });
+      const file = join(configDir, 'notify.log');
+      if (existsSync(file) && statSync(file).size > 1024 * 1024) renameSync(file, `${file}.previous`);
+      appendFileSync(file, `[${new Date().toISOString()}] ${String(message).replace(/[\r\n]/g, ' ').slice(0, 1000)}\n`);
+    } catch { /* Diagnostics must never interrupt OpenCode. */ }
+  };
 }
 
-function triggerNotification(type, data = {}) {
-  let title = "OpenCode";
-  let message = "";
-  let soundType = "idle";
+export function createNotifier({ platform = process.platform, home = homedir(), env = process.env, exists = existsSync, spawn = spawnProcess, log, now, claim, retryDelay = 1000 } = {}) {
+  const configDir = join(env.XDG_CONFIG_HOME || join(home, '.config'), 'opencode');
+  log ??= logger(configDir);
+  const duplicates = now ? createDeduplicator({ now }) : sharedDuplicates;
+  claim ??= createDeliveryClaim(join(configDir, 'notifier-cache'));
+  let stopped = false;
 
-  if (type === "permission.asked") {
-    soundType = "permission";
-    title = "OpenCode - Permission Required";
-    message = data?.title || data?.description || data?.tool || "OpenCode is waiting for your permission.";
-  } else if (type === "session.idle" || type === "session.execution.succeeded") {
-    soundType = "idle";
-    title = "OpenCode - Task Finished";
-    message = "OpenCode completed the task and is waiting for your input.";
-  } else if (
-    type === "session.error" ||
-    type === "session.execution.failed" ||
-    type === "session.step.failed"
-  ) {
-    soundType = "error";
-    title = "OpenCode - Error";
-    message = data?.message || data?.error || "An error occurred in OpenCode.";
-  } else {
-    soundType = "idle";
-    title = "OpenCode Notification";
-    message = `Event: ${type}`;
-  }
-
-  logDebug(`Triggering notification: ${type} (sound: ${soundType}) - ${title}: ${message}`);
-
-  try {
-    if (process.platform === "win32") {
-      const child = spawn(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          PS_SCRIPT,
-          "-Type",
-          soundType,
-          "-Title",
-          title,
-          "-Message",
-          message
-        ],
-        {
-          detached: true,
-          stdio: "ignore",
-          windowsHide: true
-        }
-      );
-      child.unref();
-    } else if (existsSync(SH_SCRIPT)) {
-      const child = spawn(SH_SCRIPT, [soundType, message, title], {
-        detached: true,
-        stdio: "ignore"
-      });
-      child.unref();
+  function handleEvent(event) {
+    if (stopped) return;
+    const notification = notificationFor(event);
+    if (!notification || !duplicates.accept(notification)) return;
+    const filename = platform === 'win32' ? 'opencode-notify.ps1' : 'opencode-notify.sh';
+    const candidates = [join(configDir, filename), join(home, filename), join(moduleDir, '..', 'scripts', filename)];
+    const helper = candidates.find(path => exists(path));
+    if (!helper) { log(`Notification helper missing: ${candidates.join(', ')}`); return; }
+    if (!claim(notification)) return;
+    log(`Dispatch ${notification.eventType} -> ${notification.type} session=${notification.sessionID || 'unknown'}`);
+    const sound = env.OPENCODE_NOTIFIER_SOUND || '';
+    let command, args;
+    if (platform === 'win32') {
+      command = 'powershell.exe';
+      args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Type', notification.type, '-Title', notification.title, '-Message', notification.message, '-LogPath', join(configDir, 'notify.log')];
+      if (sound) args.push('-SoundPath', sound);
+    } else {
+      command = 'bash';
+      args = [helper, notification.type, notification.message, notification.title, sound];
     }
-  } catch (err) {
-    logDebug(`Error spawning notification: ${err}`);
+    try {
+      // Detached PowerShell can exit 0 before running its script on Windows.
+      // spawn/unref is already asynchronous; only Unix needs detachment.
+      const child = spawn(command, args, { detached: platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      let stderr = '';
+      child.stderr?.on('data', data => { stderr = (stderr + String(data)).slice(0, 2000); });
+      child.stderr?.unref?.();
+      child.on('spawn', () => log(`Notification process started pid=${child.pid || 'unknown'}`));
+      child.on('error', error => log(`Notification process error: ${error.message}`));
+      child.on('close', (code, signal) => log(`Notification process exit=${code} signal=${signal || 'none'}${stderr ? ` stderr=${stderr}` : ''}`));
+      child.unref();
+    } catch (error) { log(`Notification spawn failed: ${error.message}`); }
   }
-}
 
-function handleEvent(event) {
-  if (!event || !event.type) return;
-
-  // Deduplicate events that might fire multiple times across different hooks
-  const eventKey = event.id || `${event.type}_${Date.now()}`;
-  if (recentEvents.has(eventKey)) return;
-  recentEvents.add(eventKey);
-  setTimeout(() => recentEvents.delete(eventKey), 5000);
-
-  logDebug(`Received event: ${event.type}`);
-
-  if (
-    event.type === "permission.asked" ||
-    event.type === "session.idle" ||
-    event.type === "session.execution.succeeded" ||
-    event.type === "session.error" ||
-    event.type === "session.execution.failed" ||
-    event.type === "session.step.failed"
-  ) {
-    triggerNotification(event.type, event.data);
-  }
-}
-
-// Unified OpenCode v2 + v1 Plugin Export
-export default {
-  id: "audio-visual-notifications",
-
-  // OpenCode v2 lifecycle setup
-  async setup(ctx) {
-    logDebug("Plugin v2 setup initialized");
-
-    if (ctx?.event?.subscribe) {
-      (async () => {
+  function start(ctx) {
+    const controller = new AbortController();
+    let timer;
+    let resume;
+    let attempts = 0;
+    log('Notifier v2 setup: form/question alerts enabled');
+    if (!ctx?.event?.subscribe) { log('Missing V2 event subscription API'); return () => { stopped = true; }; }
+    void (async () => {
+      while (!controller.signal.aborted) {
         try {
-          for await (const event of ctx.event.subscribe()) {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            if (controller.signal.aborted) break;
+            attempts = 0;
             handleEvent(event);
           }
-        } catch (err) {
-          logDebug(`Event stream error: ${err}`);
-        }
-      })();
-    }
-
-    return {
-      event: async ({ event }) => {
-        handleEvent(event);
+          if (!controller.signal.aborted) log('Event stream ended; reconnecting');
+        } catch (error) { if (!controller.signal.aborted) log(`Event stream failed: ${error.message}; reconnecting`); }
+        if (controller.signal.aborted) break;
+        const delay = Math.min(30000, retryDelay * 2 ** Math.min(attempts++, 5));
+        await new Promise(resolve => { resume = resolve; timer = setTimeout(resolve, delay); timer.unref?.(); });
       }
-    };
-  },
-
-  // OpenCode v1 server export
-  async server() {
-    logDebug("Plugin v1 server initialized");
-    return {
-      event: async ({ event }) => {
-        handleEvent(event);
-      }
-    };
+    })().catch(error => log(`Event subscriber failed: ${error.message}`));
+    return () => { stopped = true; controller.abort(); clearTimeout(timer); resume?.(); log('Notifier unloaded'); };
   }
+  return { handleEvent, start };
+}
+
+export default {
+  id: 'audio-visual-notifications',
+  setup(ctx) { return createNotifier().start(ctx); },
+  async server() { return NotificationPlugin(); }
 };
 
-// Backwards compatibility export for legacy OpenCode v1 loaders
+// Compatibility adapter; current V2 uses setup() and the public event stream.
 export const NotificationPlugin = async () => {
-  return {
-    event: async ({ event }) => {
-      handleEvent(event);
-    }
-  };
+  const notifier = createNotifier();
+  return { event: async ({ event }) => notifier.handleEvent(event) };
 };

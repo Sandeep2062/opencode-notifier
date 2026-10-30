@@ -4,12 +4,13 @@
 .DESCRIPTION
     Automates plugin setup, registers OpenCode AppUserModelID for Windows 10/11 Toast
     Notifications, copies notification scripts, runs a quick self-test,
-    and restarts the OpenCode background service.
+    without restarting the OpenCode background service.
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$SkipTest
+    [switch]$SkipTest,
+    [string]$ConfigDir = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +20,27 @@ Write-Host "  OpenCode Audio & Visual Notification Plugin Installer   " -Foregro
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$ConfigDir = Join-Path $HOME ".config\opencode"
-$PluginDir = Join-Path $ConfigDir "plugin"
+$customConfig = [bool]$ConfigDir
+if (-not $ConfigDir) {
+    $root = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+    $ConfigDir = Join-Path $root 'opencode'
+}
+$PluginDir = Join-Path $ConfigDir 'plugins\opencode-notifier'
+$BackupDir = Join-Path $ConfigDir ("notifier-backups\" + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fffffff'))
+$knownFiles = @('plugins\opencode-notifier\notify.js', 'plugins\opencode-notifier\notification-core.js', 'plugins\opencode-notifier\delivery-claim.js', 'plugins\opencode-notifier\package.json', 'opencode-notify.ps1', 'opencode-notify.sh', 'notifier-sounds\attention.wav', 'notifier-sounds\complete.wav', 'notifier-sounds\error.wav')
+$legacyFiles = @('plugin\notify.js', 'plugins\notify.js')
+foreach ($relative in ($knownFiles + $legacyFiles)) {
+    $existing = Join-Path $ConfigDir $relative
+    if (-not (Test-Path -LiteralPath $existing -PathType Leaf)) { continue }
+    if ($relative -in $legacyFiles -and -not ((Get-Content -LiteralPath $existing -Raw) -match 'audio-visual-notifications')) {
+        Write-Warning "Preserving unrecognized plugin: $existing"
+        continue
+    }
+    $backup = Join-Path $BackupDir $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+    Copy-Item -LiteralPath $existing -Destination $backup -Force
+}
+if (Test-Path -LiteralPath $BackupDir) { Write-Host "Backup: $BackupDir" -ForegroundColor Green }
 
 # 1. Ensure target directories exist
 Write-Host "[1/6] Creating configuration directories..." -ForegroundColor Yellow
@@ -31,10 +51,11 @@ Write-Host "  -> Target: $PluginDir" -ForegroundColor Green
 
 # 2. Register OpenCode AppUserModelId for Windows 10/11 Toast Notifications
 Write-Host "[2/6] Registering OpenCode Application ID for Windows Action Center..." -ForegroundColor Yellow
-try {
+if (-not $customConfig) { try {
     $StartMenuPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
-    $ShortcutPath = Join-Path $StartMenuPath "OpenCode.lnk"
-    $AppId = "OpenCode"
+    $ShortcutPath = Join-Path $StartMenuPath 'OpenCode Notifier.lnk'
+    $AppId = 'OpenCode.Notifier'
+    if (Test-Path -LiteralPath $ShortcutPath) { Write-Host '  -> Existing notifier shortcut preserved.'; throw 'Shortcut already exists; registration left unchanged' }
     $ExePath = if (Get-Command opencode -ErrorAction SilentlyContinue) { (Get-Command opencode).Source } else { "$PSHome\powershell.exe" }
 
     Add-Type -TypeDefinition @"
@@ -110,11 +131,15 @@ public class ShellLinkHelper {
         PROPERTYKEY pkey = new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
         PROPVARIANT propVar = new PROPVARIANT(aumid);
 
-        propStore.SetValue(ref pkey, ref propVar);
-        propStore.Commit();
-
-        IPersistFile persistFile = (IPersistFile)link;
-        persistFile.Save(lnkPath, true);
+        try {
+            propStore.SetValue(ref pkey, ref propVar);
+            propStore.Commit();
+            IPersistFile persistFile = (IPersistFile)link;
+            persistFile.Save(lnkPath, true);
+        } finally {
+            Marshal.FreeCoTaskMem(propVar.pwszVal);
+            Marshal.FinalReleaseComObject(link);
+        }
     }
 }
 "@ -ErrorAction SilentlyContinue
@@ -123,49 +148,45 @@ public class ShellLinkHelper {
     Write-Host "  -> Registered OpenCode Start Menu shortcut with AppId '$AppId'" -ForegroundColor Green
 } catch {
     Write-Host "  -> Note: AppId shortcut registration skipped (will use fallback AppId)" -ForegroundColor DarkYellow
-}
+} }
 
-# 3. Copy Plugin file
-Write-Host "[3/6] Installing OpenCode plugin..." -ForegroundColor Yellow
-$SourcePlugin = Join-Path $ScriptDir "plugin\notify.js"
-$DestPlugin = Join-Path $PluginDir "notify.js"
-Copy-Item -Path $SourcePlugin -Destination $DestPlugin -Force
-Write-Host "  -> Installed notify.js" -ForegroundColor Green
-
-# 4. Copy Notification Scripts
-Write-Host "[4/6] Installing notification engines..." -ForegroundColor Yellow
+# Install dependencies first and publish the entrypoint last.
+Write-Host '[3/6] Installing notification engines and original chimes...' -ForegroundColor Yellow
 $SourcePs = Join-Path $ScriptDir "scripts\opencode-notify.ps1"
 $SourceSh = Join-Path $ScriptDir "scripts\opencode-notify.sh"
 
 Copy-Item -Path $SourcePs -Destination (Join-Path $ConfigDir "opencode-notify.ps1") -Force
-Copy-Item -Path $SourcePs -Destination (Join-Path $HOME "opencode-notify.ps1") -Force
-Copy-Item -Path $SourceSh -Destination (Join-Path $HOME "opencode-notify.sh") -Force
+Copy-Item -Path $SourceSh -Destination (Join-Path $ConfigDir 'opencode-notify.sh') -Force
+$SoundDir = Join-Path $ConfigDir 'notifier-sounds'
+New-Item -ItemType Directory -Path $SoundDir -Force | Out-Null
+foreach ($sound in @('attention.wav', 'complete.wav', 'error.wav')) {
+    Copy-Item -LiteralPath (Join-Path $ScriptDir "sounds\$sound") -Destination (Join-Path $SoundDir $sound) -Force
+}
+Write-Host '[4/6] Installing V2 plugin package...' -ForegroundColor Yellow
+foreach ($name in @('notification-core.js', 'delivery-claim.js', 'package.json', 'notify.js')) {
+    Copy-Item -LiteralPath (Join-Path $ScriptDir "plugin\$name") -Destination (Join-Path $PluginDir $name) -Force
+}
+foreach ($relative in $legacyFiles) {
+    $existing = Join-Path $ConfigDir $relative
+    if ((Test-Path -LiteralPath (Join-Path $BackupDir $relative)) -and (Test-Path -LiteralPath $existing)) {
+        Remove-Item -LiteralPath $existing -Force
+    }
+}
 Write-Host "  -> Installed opencode-notify.ps1 and opencode-notify.sh" -ForegroundColor Green
 
-# 5. Restart OpenCode Service (if available)
-Write-Host "[5/6] Checking OpenCode service status..." -ForegroundColor Yellow
-if (Get-Command opencode -ErrorAction SilentlyContinue) {
-    try {
-        & opencode service restart | Out-Null
-        Write-Host "  -> OpenCode background service restarted successfully!" -ForegroundColor Green
-    } catch {
-        Write-Host "  -> Note: OpenCode service could not be restarted automatically. Run 'opencode service restart' manually." -ForegroundColor DarkYellow
-    }
-} else {
-    Write-Host "  -> Note: 'opencode' command not found in PATH. Install OpenCode CLI to use." -ForegroundColor DarkYellow
-}
+Write-Host '[5/6] Files installed. OpenCode reloads watched plugins; use /reload if needed. No service restart.' -ForegroundColor Green
 
 # 6. Self-Test
 Write-Host "[6/6] Testing notifications..." -ForegroundColor Yellow
 if (-not $SkipTest) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ConfigDir "opencode-notify.ps1") -Type "permission" -Title "OpenCode Setup Test" -Message "OpenCode notifications installed successfully!"
-    Write-Host "  -> Notification sound and desktop toast sent!" -ForegroundColor Green
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ConfigDir 'opencode-notify.ps1') -Type 'question' -Title 'OpenCode Setup Test' -Message 'Question notifications are ready. Did you see a banner and hear a chime?' -LogPath (Join-Path $ConfigDir 'notify.log')
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'Notification test failed; inspect notify.log.' }
+    else { Write-Host '  -> Notification APIs attempted. Confirm banner/sound and check Windows notification settings if absent.' -ForegroundColor Green }
 } else {
     Write-Host "  -> Test skipped." -ForegroundColor Gray
 }
 
-Write-Host "`nInstallation Completed Successfully! 🎉" -ForegroundColor Cyan
+Write-Host "`nInstallation Completed Successfully!" -ForegroundColor Cyan
 Write-Host "Supported Events:" -ForegroundColor White
-Write-Host "  1. permission.asked -> Exclamation alert sound + Windows Toast" -ForegroundColor Gray
-Write-Host "  2. session.idle / succeeded -> Asterisk chime + Windows Toast" -ForegroundColor Gray
-Write-Host "  3. session.error / failed   -> Hand warning sound + Windows Toast`n" -ForegroundColor Gray
+Write-Host '  Questions/options and permissions -> soft attention chime + banner' -ForegroundColor Gray
+Write-Host '  Completion and errors -> distinct original chimes + banner' -ForegroundColor Gray

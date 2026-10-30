@@ -1,0 +1,5 @@
+{
+  "name": "opencode-notifier",
+  "type": "module",
+  "exports": { ".": "./notify.js" }
+}

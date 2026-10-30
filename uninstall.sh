@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
-# OpenCode Audio & Visual Notification Plugin Uninstaller
-
-CONFIG_DIR="$HOME/.config/opencode"
-
-echo "Uninstalling OpenCode Audio & Visual Notification Plugin..."
-
-rm -f "$CONFIG_DIR/plugin/notify.js"
-rm -f "$CONFIG_DIR/opencode-notify.ps1"
-rm -f "$HOME/opencode-notify.ps1"
-rm -f "$HOME/opencode-notify.sh"
-rm -f "$CONFIG_DIR/notify.log"
-
-if command -v opencode &> /dev/null; then
-    opencode service restart &> /dev/null || true
-    echo "  -> OpenCode service reloaded."
-fi
-
-echo "Uninstallation completed."
+set -e
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+for file in notify.js notification-core.js delivery-claim.js package.json; do rm -f "$CONFIG_DIR/plugins/opencode-notifier/$file"; done
+for cue in attention complete error; do rm -f "$CONFIG_DIR/notifier-sounds/$cue.wav"; done
+rm -f "$CONFIG_DIR/opencode-notify.ps1" "$CONFIG_DIR/opencode-notify.sh"
+for file in "$CONFIG_DIR/plugin/notify.js" "$CONFIG_DIR/plugins/notify.js"; do
+    if [[ -f "$file" ]] && grep -q 'audio-visual-notifications' "$file"; then rm -f "$file"; fi
+done
+echo 'Notifier removed. Logs, backups, custom audio, shortcuts, and unrelated plugins preserved. Use /reload if needed.'

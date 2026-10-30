@@ -1,30 +1,20 @@
-<#
-.SYNOPSIS
-    Uninstalls OpenCode Audio & Visual Notification Plugin on Windows.
-#>
-
-$ConfigDir = Join-Path $HOME ".config\opencode"
-$PluginFile = Join-Path $ConfigDir "plugin\notify.js"
-$PsScript1 = Join-Path $ConfigDir "opencode-notify.ps1"
-$PsScript2 = Join-Path $HOME "opencode-notify.ps1"
-$ShScript = Join-Path $HOME "opencode-notify.sh"
-$LogFile = Join-Path $ConfigDir "notify.log"
-
-Write-Host "Uninstalling OpenCode Audio & Visual Notification Plugin..." -ForegroundColor Yellow
-
-$files = @($PluginFile, $PsScript1, $PsScript2, $ShScript, $LogFile)
-foreach ($file in $files) {
-    if (Test-Path $file) {
-        Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
-        Write-Host "  -> Removed: $file" -ForegroundColor Gray
-    }
+param([string]$ConfigDir = '')
+$ErrorActionPreference = 'Stop'
+if (-not $ConfigDir) {
+    $root = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+    $ConfigDir = Join-Path $root 'opencode'
 }
-
-if (Get-Command opencode -ErrorAction SilentlyContinue) {
-    try {
-        & opencode service restart | Out-Null
-        Write-Host "  -> OpenCode service reloaded." -ForegroundColor Green
-    } catch {}
+$package = Join-Path $ConfigDir 'plugins\opencode-notifier'
+foreach ($name in @('notify.js', 'notification-core.js', 'delivery-claim.js', 'package.json')) {
+    $file = Join-Path $package $name
+    if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
 }
-
-Write-Host "Uninstallation completed." -ForegroundColor Green
+foreach ($relative in @('opencode-notify.ps1', 'opencode-notify.sh', 'notifier-sounds\attention.wav', 'notifier-sounds\complete.wav', 'notifier-sounds\error.wav')) {
+    $file = Join-Path $ConfigDir $relative
+    if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+}
+foreach ($relative in @('plugin\notify.js', 'plugins\notify.js')) {
+    $file = Join-Path $ConfigDir $relative
+    if ((Test-Path -LiteralPath $file) -and ((Get-Content -LiteralPath $file -Raw) -match 'audio-visual-notifications')) { Remove-Item -LiteralPath $file -Force }
+}
+Write-Host 'Notifier removed. Logs, backups, custom audio, shortcuts, and unrelated plugins preserved. Use /reload if needed; service was not restarted.' -ForegroundColor Green
