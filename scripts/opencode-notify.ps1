@@ -1,9 +1,7 @@
 param(
     [string]$Type = "permission",
     [string]$Title = "",
-    [string]$Message = "",
-    [string]$WavFile = "",
-    [switch]$NoVoice = $false
+    [string]$Message = ""
 )
 
 # Normalize event type
@@ -16,61 +14,50 @@ switch ($Type.ToLower()) {
     "session.step.failed"         { $Type = "error" }
 }
 
-$defaultWav = ""
-$soundEvent = "Notification.Default"
-$voiceText = "OpenCode notification"
+# Modern standard Windows notification sound (same as Google Antigravity / Windows 11)
+$soundFile = "C:\Windows\Media\Windows Notify System Generic.wav"
+if (-not (Test-Path $soundFile)) {
+    $soundFile = "C:\Windows\Media\Windows Notify.wav"
+}
 
 switch ($Type.ToLower()) {
     "permission" {
         if (-not $Title)   { $Title = "OpenCode - Permission Required" }
         if (-not $Message) { $Message = "OpenCode is waiting for your permission to proceed." }
-        $defaultWav = "C:\Windows\Media\notify.wav"
-        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\Windows Notify.wav" }
-        $soundEvent = "Notification.Reminder"
-        $voiceText = "OpenCode needs your permission"
+        $soundFile = "C:\Windows\Media\Windows Notify.wav"
+        if (-not (Test-Path $soundFile)) { $soundFile = "C:\Windows\Media\Windows Notify System Generic.wav" }
     }
     "idle" {
         if (-not $Title)   { $Title = "OpenCode - Task Finished" }
         if (-not $Message) { $Message = "OpenCode has completed and is waiting for your input." }
-        $defaultWav = "C:\Windows\Media\tada.wav"
-        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\chimes.wav" }
-        $soundEvent = "Notification.Reminder"
-        $voiceText = "OpenCode task completed"
+        $soundFile = "C:\Windows\Media\Windows Notify System Generic.wav"
     }
     "error" {
         if (-not $Title)   { $Title = "OpenCode - Error" }
         if (-not $Message) { $Message = "An error occurred in OpenCode." }
-        $defaultWav = "C:\Windows\Media\chord.wav"
-        if (-not (Test-Path $defaultWav)) { $defaultWav = "C:\Windows\Media\Windows Foreground.wav" }
-        $soundEvent = "Notification.Critical"
-        $voiceText = "OpenCode encountered an error"
+        $soundFile = "C:\Windows\Media\Windows Foreground.wav"
     }
     default {
         if (-not $Title)   { $Title = "OpenCode Notification" }
         if (-not $Message) { $Message = "Notification event: $Type" }
-        $defaultWav = "C:\Windows\Media\tada.wav"
-        $soundEvent = "Notification.Default"
-        $voiceText = "OpenCode notification"
+        $soundFile = "C:\Windows\Media\Windows Notify System Generic.wav"
     }
 }
 
-# 1. Display Persistent High-Priority Windows Toast (scenario="reminder" prevents being hidden by Focus Assist)
+# 1. Display Windows Toast Notification (clean standard notification, matching Antigravity)
 try {
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
     $xmlTemplate = @"
-<toast scenario="reminder">
+<toast>
     <visual>
         <binding template="ToastGeneric">
             <text>$Title</text>
             <text>$Message</text>
         </binding>
     </visual>
-    <audio src="ms-winsoundevent:$soundEvent" />
-    <actions>
-        <action content="Dismiss" activationType="system" arguments="dismiss" />
-    </actions>
+    <audio silent="true" />
 </toast>
 "@
 
@@ -97,24 +84,18 @@ try {
         $notify = New-Object System.Windows.Forms.NotifyIcon
         $notify.Icon = [System.Drawing.SystemIcons]::Information
         $notify.Visible = $true
-        $notify.ShowBalloonTip(4000, $Title, $Message, [System.Windows.Forms.ToolTipIcon]::Info)
+        $notify.ShowBalloonTip(3000, $Title, $Message, [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {}
 }
 
-# 2. Spoken Voice Announcement (Crystal-clear speech so you hear it even away from keyboard)
-if (-not $NoVoice) {
+# 2. Play standard Windows notification sound via SoundPlayer
+if ($soundFile -and (Test-Path $soundFile)) {
     try {
-        Add-Type -AssemblyName System.Speech
-        $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-        $synth.SpeakAsync($voiceText) | Out-Null
-    } catch {}
-}
-
-# 3. Play Direct High-Fidelity WAV Chime
-$targetWav = if ($WavFile -and (Test-Path $WavFile)) { $WavFile } else { $defaultWav }
-if ($targetWav -and (Test-Path $targetWav)) {
-    try {
-        $player = New-Object System.Media.SoundPlayer $targetWav
+        $player = New-Object System.Media.SoundPlayer $soundFile
         $player.PlaySync()
-    } catch {}
+    } catch {
+        [System.Media.SystemSounds]::Asterisk.Play()
+    }
+} else {
+    [System.Media.SystemSounds]::Asterisk.Play()
 }
